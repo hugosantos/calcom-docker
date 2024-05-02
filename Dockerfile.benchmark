@@ -1,0 +1,106 @@
+# Provided by Brandon
+FROM node:18 as builder
+
+WORKDIR /calcom
+
+
+ENV YARN_ENABLE_IMMUTABLE_INSTALLS=false \
+    NODE_OPTIONS="--max-old-space-size=31000" \
+    CI=true
+
+ENV CALENDSO_ENCRYPTION_KEY="mmoFlqaJ+zjo3UjbdYKKA+CeE6sz+9Lj" \ 
+    DATABASE_DIRECT_URL="redacted" \ 
+    DATABASE_URL="redacted" \ 
+    EMAIL_FROM="notifications@yourselfhostedcal.com" \ 
+    NEXTAUTH_SECRET="Tr2+niLseUWAHYhlUOdVq2R6uhB85YzO2IWcLPht2Fs=" \ 
+    NEXT_PUBLIC_API_V2_URL="http://localhost:5555/api/v2" \ 
+    NEXT_PUBLIC_WEBAPP_URL="http://localhost:3000" \ 
+    SENTRY_DISABLE_SERVER_WEBPACK_PLUGIN="1" 
+
+COPY calcom/.npmrc ./.npmrc
+COPY calcom/package.json ./package.json
+COPY calcom/yarn.lock ./yarn.lock  
+COPY calcom/turbo.json ./turbo.json
+COPY calcom/.yarnrc.yml ./.yarnrc.yml
+COPY calcom/.yarn ./.yarn           
+COPY calcom/packages/ui/package.json ./packages/ui/package.json 
+COPY calcom/packages/types/package.json ./packages/types/package.json 
+COPY calcom/packages/core/package.json ./packages/core/package.json 
+COPY calcom/packages/app-store ./packages/app-store 
+COPY calcom/packages/app-store-cli ./packages/app-store-cli 
+COPY calcom/packages/config ./packages/config              
+COPY calcom/packages/trpc/package.json ./packages/trpc/package.json 
+COPY calcom/packages/tsconfig ./packages/tsconfig                  
+COPY calcom/packages/emails/package.json ./packages/emails/package.json
+COPY calcom/packages/platform ./packages/platform                     
+COPY calcom/packages/debugging/package.json ./packages/debugging/package.json   
+COPY calcom/packages/features/auth/package.json ./packages/features/auth/package.json 
+COPY calcom/packages/features/ee/package.json ./packages/features/ee/package.json    
+COPY calcom/packages/features/package.json ./packages/features/package.json 
+COPY calcom/packages/prisma ./packages/prisma                    
+COPY calcom/packages/lib ./packages/lib                         
+COPY calcom/packages/dayjs/package.json ./packages/dayjs/package.json  
+COPY calcom/packages/kysely/package.json ./packages/kysely/package.json 
+COPY calcom/packages/embeds/embed-snippet/package.json ./packages/embeds/embed-snippet/package.json 
+COPY calcom/packages/embeds/embed-react/package.json ./packages/embeds/embed-react/package.json
+COPY calcom/packages/embeds/embed-core/package.json ./packages/embeds/embed-core/package.json
+COPY calcom/packages/eslint-plugin/package.json ./packages/eslint-plugin/package.json 
+COPY calcom/apps/storybook/package.json ./apps/storybook/package.json       
+COPY calcom/apps/swagger/package.json ./apps/swagger/package.json          
+COPY calcom/apps/web/package.json ./apps/web/package.json       
+COPY calcom/apps/ai/package.json ./apps/ai/package.json        
+COPY calcom/apps/api/v1/package.json ./apps/api/v1/package.json 
+COPY calcom/apps/api/v2/package.json ./apps/api/v2/package.json
+COPY calcom/apps/api/package.json ./apps/api/package.json
+
+RUN yarn config set httpTimeout 1200000 && \ 
+    npx turbo prune --scope=@calcom/web --docker && \
+    yarn install 
+
+COPY calcom/ ./
+
+RUN yarn turbo run @calcom/web#build
+
+# RUN yarn plugin import workspace-tools && \
+#     yarn workspaces focus --all --production
+RUN rm -rf node_modules/.cache .yarn/cache apps/web/.next/cache
+
+FROM node:18 as builder-two
+
+WORKDIR /calcom
+ARG NEXT_PUBLIC_WEBAPP_URL=http://localhost:3000
+
+COPY calcom/package.json calcom/.yarnrc.yml calcom/yarn.lock calcom/turbo.json ./
+COPY calcom/.yarn ./.yarn
+COPY --from=builder /calcom/node_modules ./node_modules
+COPY --from=builder /calcom/packages ./packages
+COPY --from=builder /calcom/apps/web ./apps/web
+COPY --from=builder /calcom/packages/prisma/schema.prisma ./prisma/schema.prisma
+COPY scripts scripts
+
+# Save value used during this build stage. If NEXT_PUBLIC_WEBAPP_URL and BUILT_NEXT_PUBLIC_WEBAPP_URL differ at
+# run-time, then start.sh will find/replace static values again.
+
+# RUN scripts/replace-placeholder.sh http://NEXT_PUBLIC_WEBAPP_URL_PLACEHOLDER ${NEXT_PUBLIC_WEBAPP_URL}
+
+FROM node:18 as runner
+
+
+WORKDIR /calcom
+COPY --from=builder-two /calcom ./
+
+ENV CALENDSO_ENCRYPTION_KEY="mmoFlqaJ+zjo3UjbdYKKA+CeE6sz+9Lj" \ 
+    DATABASE_DIRECT_URL="redacted" \ 
+    DATABASE_URL="redacted" \ 
+    EMAIL_FROM="notifications@yourselfhostedcal.com" \ 
+    NEXTAUTH_SECRET="Tr2+niLseUWAHYhlUOdVq2R6uhB85YzO2IWcLPht2Fs=" \ 
+    NEXT_PUBLIC_API_V2_URL="http://localhost:5555/api/v2" \ 
+    NEXT_PUBLIC_WEBAPP_URL="http://localhost:3000" \ 
+    SENTRY_DISABLE_SERVER_WEBPACK_PLUGIN="1" 
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=30s --retries=5 \
+    CMD wget --spider http://localhost:3000 || exit 1
+
+CMD ["/calcom/scripts/start.sh"]
